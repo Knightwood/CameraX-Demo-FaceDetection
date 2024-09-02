@@ -68,7 +68,7 @@ dependencies {
     api("com.github.Knightwood:SimpleStore:1.0")
 
     // CameraX core library
-    val camerax_version ="1.3.4"
+    val camerax_version ="1.4.0-rc01"
 
     // CameraX Camera2 extensions
     api ("androidx.camera:camera-camera2:$camerax_version")
@@ -79,9 +79,10 @@ dependencies {
     // If you want to additionally use the CameraX View class
     api ("androidx.camera:camera-view:$camerax_version")
     // If you want to additionally add CameraX ML Kit Vision Integration
-    api ("androidx.camera:camera-mlkit-vision:1.4.0-beta02")
+    api ("androidx.camera:camera-mlkit-vision:$camerax_version")
     // If you want to additionally use the CameraX Extensions library
     api ("androidx.camera:camera-extensions:$camerax_version")
+
     api("com.blankj:utilcodex:1.31.0")
     api("com.guolindev.permissionx:permissionx:1.6.1")
 }

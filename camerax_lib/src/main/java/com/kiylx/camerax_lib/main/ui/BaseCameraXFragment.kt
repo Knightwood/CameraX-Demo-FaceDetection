@@ -129,6 +129,8 @@ open class BaseCameraXFragment : CameraXFragment() {
         //拍照，拍视频的UI 操作的各种状态处理
         (controllerPanel as ControllerPanel).setCaptureListener(object : DefaultCaptureListener() {
             override fun takePictures() {
+                //相机信息打印
+//                cameraHolder.queryAllCameraInfo()
                 takePhoto()
             }
 

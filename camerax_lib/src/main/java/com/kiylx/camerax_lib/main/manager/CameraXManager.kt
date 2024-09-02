@@ -10,14 +10,19 @@ import android.util.Log
 import android.util.Range
 import android.util.Size
 import androidx.annotation.CallSuper
+import androidx.annotation.OptIn
 import androidx.camera.camera2.interop.Camera2CameraInfo
 import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.Camera
+import androidx.camera.core.CameraInfo
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.CameraState
+import androidx.camera.core.ConcurrentCamera
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCase
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ZoomState
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.Recorder
@@ -31,6 +36,8 @@ import androidx.lifecycle.Lifecycle.Event.ON_DESTROY
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LiveData
+import com.kiylx.camerax_lib.main.camera2.Camera2Helper
+import com.kiylx.camerax_lib.main.camera2.FormatItem
 import com.kiylx.camerax_lib.main.manager.ManagerUtil.Companion.hasBackCamera
 import com.kiylx.camerax_lib.main.manager.ManagerUtil.Companion.hasFrontCamera
 import com.kiylx.camerax_lib.main.manager.model.CameraManagerEventListener
@@ -39,10 +46,12 @@ import com.kiylx.camerax_lib.main.manager.model.FlashModel
 import com.kiylx.camerax_lib.main.manager.model.ManagerConfig
 import com.kiylx.camerax_lib.main.manager.model.SensorRotation
 import com.kiylx.camerax_lib.main.manager.model.UseCaseHexStatus
+import com.kiylx.camerax_lib.main.manager.model.UseCaseMode
 import com.kiylx.camerax_lib.main.manager.util.HexStatusManager
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+
 
 /*
 如果视图是强制竖屏或横屏，就不该旋转预览视图
@@ -60,6 +69,28 @@ abstract class CameraXManager(
         internal set
     var camera: Camera? = null
         internal set
+        get() {
+            if (concurrentCamera != null) {
+                if (currentUseCamera != null) {
+                    return currentUseCamera
+                } else {
+                    return concurrentCamera!!.cameras[0]
+                }
+            } else {
+                return field
+            }
+        }
+
+    /**
+     * 同时使用多个相机模式
+     */
+    private var concurrentCamera: ConcurrentCamera? = null
+
+    /**
+     * 同时使用多个相机时，通过此变量切换操纵的相机
+     */
+    private var currentUseCamera: Camera? = null
+
     lateinit var cameraProvider: ProcessCameraProvider
         internal set
     var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -303,6 +334,7 @@ abstract class CameraXManager(
 
     /**
      * 绑定相机实例之类的
+     *
      * @param useCaseBundle 用例组合 [ManagerConfig.useCaseMode]
      */
     internal fun setCamera(useCaseBundle: Int) {
@@ -327,71 +359,129 @@ abstract class CameraXManager(
             if (UseCaseHexStatus.canAnalyze(useCaseBundle)) {
                 useCaseRunning = true
             }
-
-            //目前一次无法绑定拍照和摄像一起
-            /*when (useCaseMode) {
-                UseCaseMode.imageAnalysis -> {
-                    try {
-                        //LEVEL_3（或更好）的相机设备才支持“预览”、“视频拍摄”、“图像分析” 三个同时绑定。这里暂定，未来可能会增加更多种绑定
-                        imageAnalyzer.setAnalyzer(cameraExecutor, selectAnalyzer())
-                        camera = cameraProvider.bindToLifecycle(
-                            lifeOwner,
-                            cameraSelector,
-                            preview,
-                            imageAnalyzer,
-                            imageCapture
-                        )
-                        useCaseRunning = true
-                    } catch (e: Exception) {
-                        Log.e(TAG, "bind imageAnalyzer failed", e)
-                    }
-
-                }
-
-                UseCaseMode.takePhoto -> {
-                    try {
-                        camera = cameraProvider.bindToLifecycle(
-                            lifeOwner, cameraSelector, preview, imageCapture
-                        )
-                    } catch (exc: Exception) {
-                        Log.e(TAG, "Use case binding failed", exc)
-                    }
-                }
-
-                UseCaseMode.takeVideo -> {
-                    try {
-                        camera = cameraProvider.bindToLifecycle(
-                            lifeOwner,
-                            cameraSelector,
-                            preview,
-                            videoCapture
-                        )
-                    } catch (exc: Exception) {
-                        Log.e(TAG, "Use case binding failed", exc)
-                    }
-                }
-
-                UseCaseMode.onlyPreview -> {
-                    try {
-                        camera = cameraProvider.bindToLifecycle(
-                            lifeOwner,
-                            cameraSelector,
-                            preview,
-                        )
-                    } catch (exc: Exception) {
-                        Log.e(TAG, "Use case binding failed", exc)
-                    }
-                }
-
-                else -> {
-
-                }
-            }*/
         } catch (exc: Exception) {
             Log.e(TAG, "Use case binding failed", exc)
         }
     }
 
+    /**
+     * 查询所有可用的的相机信息
+     */
+    @OptIn(ExperimentalCamera2Interop::class)
+    fun queryAllCameraInfo(): List<Camera2CameraInfo> {
+        //或者
+        return cameraProvider.availableCameraInfos.map { it: CameraInfo ->
+            Camera2CameraInfo.from(it).also {
+                Log.d(TAG, "available: ${it.cameraId}")
+            }
+        }
+    }
+
+    /**
+     * 查询所有的相机信息
+     */
+    fun queryAllCameraInfo2(): List<FormatItem> {
+        return Camera2Helper.enumerateCameras(context).onEach {
+            Log.d(TAG, "cameraInfo:$it")
+        }
+    }
+
+    /**
+     * 多相机模式，例如同时绑定前置摄像头和后置摄像头。
+     *
+     * @param primaryCameraSelector 默认为后置摄像头
+     * @param secondaryCameraSelector 默认为前置摄像头
+     * @param useCaseBundle 用例组合
+     * @param action 自定义用例组合的其他设置，例如设置视口，mEffects等。
+     *
+     * ```
+     *     val primaryCamera: Camera = concurrentCamera.cameras[0]
+     *     val secondaryCamera: Camera = concurrentCamera.cameras[1]
+     * ```
+     */
+    fun useTwoCamera(
+        primaryCameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA,
+        secondaryCameraSelector: CameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA,
+        useCaseBundle: Int = UseCaseMode.takePhoto,
+        action: UseCaseGroup.Builder.() -> Unit = {},
+    ): ConcurrentCamera {
+        val useCaseGroup = UseCaseGroup.Builder().apply {
+            parseUseCase(useCaseBundle).forEach {
+                addUseCase(it)
+            }
+            this.action()
+        }.build()
+
+
+        // Build ConcurrentCameraConfig
+        val primary = ConcurrentCamera.SingleCameraConfig(
+            primaryCameraSelector,
+            useCaseGroup,
+            context
+        )
+
+        val secondary = ConcurrentCamera.SingleCameraConfig(
+            secondaryCameraSelector,
+            useCaseGroup,
+            context
+        )
+        setMultiCamera(useCaseBundle, primary, secondary)
+        return concurrentCamera!!
+    }
+
+    private fun setMultiCamera(
+        useCaseBundle: Int,
+        vararg cameraConfigs: ConcurrentCamera.SingleCameraConfig,
+    ) {
+        this.useCaseBundle = useCaseBundle
+        useCaseRunning = false
+
+        cameraProvider.unbindAll()
+        try {
+            concurrentCamera = cameraProvider.bindToLifecycle(cameraConfigs.toList())
+            if (UseCaseHexStatus.canAnalyze(useCaseBundle)) {
+                useCaseRunning = true
+            }
+        } catch (exc: Exception) {
+            Log.e(TAG, "Use case binding failed", exc)
+        }
+    }
+
+
+    /**
+     * 使用多相机时，可以通过此方法切换将要操纵的相机
+     */
+    fun setCurrentUseCamera(camera: Camera) {
+        concurrentCamera?.let {
+            currentUseCamera = camera
+        } ?: let {
+            throw IllegalStateException("concurrentCamera is null")
+        }
+    }
+
+    /**
+     * 设置相机选择器。 筛选符合特定条件后置相机，前置相机，符合条件的外置相机等。 又或者不用逻辑相机，绑定某个物理相机
+     *
+     * ```
+     *  val selector = CameraSelector.Builder()
+     *             .requireLensFacing()
+     *             .addCameraFilter()
+     *             .setPhysicalCameraId()
+     *             .build()
+     * ```
+     */
+    @SuppressLint("RestrictedApi")
+    fun setCameraSelector(selector: CameraSelector) {
+        cameraSelector = selector
+        lensFacing = selector.lensFacing ?: CameraSelector.LENS_FACING_UNKNOWN
+    }
+
+    /**
+     * 获取可以读取相机状态的LiveData
+     */
+    fun getCameraStateLiveData(): LiveData<CameraState> {
+        return camera!!.cameraInfo.cameraState
+    }
 
     /**
      * 切换闪光模式, 打开，关闭，自动，长亮
@@ -554,7 +644,12 @@ abstract class CameraXManager(
                 UseCaseHexStatus.USE_CASE_VIDEO_CAPTURE
             )
         ) {
-            if (!checkDeviceCameraLevel(cameraProvider, cameraSelector, CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED))
+            if (!checkDeviceCameraLevel(
+                    cameraProvider,
+                    cameraSelector,
+                    CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED
+                )
+            )
                 throw IllegalArgumentException("Unsupported combinations")
         }
         if (HexStatusManager.isAllContain(
@@ -566,7 +661,12 @@ abstract class CameraXManager(
         ) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N)
                 throw IllegalArgumentException("Unsupported combinations")
-            if (!checkDeviceCameraLevel(cameraProvider, cameraSelector, CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3))
+            if (!checkDeviceCameraLevel(
+                    cameraProvider,
+                    cameraSelector,
+                    CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3
+                )
+            )
                 throw IllegalArgumentException("Unsupported combinations")
         }
         return list.toTypedArray()
